@@ -59,12 +59,18 @@ dialog label{font-size:13px;color:var(--muted)}
 
 <dialog id="settings">
   <h3 style="margin-top:0">Einstellungen</h3>
-  <label>OmniRoute-Adresse</label>
-  <input id="baseUrl" placeholder="https://dein-pc.tailnet.ts.net/v1">
-  <div style="font-size:12px;color:var(--muted);margin:-6px 0 12px">Am PC: http://localhost:20128/v1 · Unterwegs: deine Tailscale-Adresse mit /v1</div>
-  <label>OmniRoute-API-Schlüssel (Endpoint → Registrierte Schlüssel)</label>
-  <input id="apiKey" type="password" placeholder="sk-…" autocomplete="off">
-  <div style="font-size:12px;color:var(--muted);margin-bottom:12px">Der Schlüssel bleibt nur in diesem Browser gespeichert.</div>
+  <label>Gemini-API-Key (Google AI Studio)</label>
+  <input id="geminiKey" type="password" placeholder="AIza… oder AQ.…" autocomplete="off">
+  <label>Groq-API-Key</label>
+  <input id="groqKey" type="password" placeholder="gsk_…" autocomplete="off">
+  <details style="margin-bottom:12px">
+    <summary style="font-size:13px;color:var(--muted);cursor:pointer">OmniRoute (optional, wenn dein PC läuft)</summary>
+    <label>OmniRoute-Adresse</label>
+    <input id="baseUrl" placeholder="https://desktop-sb3bjc1.tailf0b48a.ts.net/v1">
+    <label>OmniRoute-Schlüssel</label>
+    <input id="apiKey" type="password" placeholder="sk-…" autocomplete="off">
+  </details>
+  <div style="font-size:12px;color:var(--muted);margin-bottom:12px">Keys bleiben nur in diesem Browser gespeichert. Mindestens Gemini oder Groq eintragen, dann läuft der Chat ohne PC.</div>
   <div id="settingsErr" style="font-size:13px;color:var(--claude);margin-bottom:12px"></div>
   <div style="display:flex;gap:8px;justify-content:flex-end">
     <button class="btn" id="cancelSettings">Abbrechen</button>
@@ -86,8 +92,20 @@ Trifft etwas zu, beginne deine Antwort exakt mit einer Zeile im Format
 [[CLAUDE]] <kurzer Grund in einem Satz>
 und gib danach höchstens zwei Sätze Hinweis, aber keine vollständige Lösung.
 Trifft nichts zu, löse die Aufgabe direkt und ohne diese Markierung.`;
+const SYSTEM_FORCE = 'Du bist ein Alltags-Assistent. Antworte auf Deutsch, klar und knapp. Löse die Aufgabe direkt, so gut du kannst.';
 
 const SENSITIVE = /\b(patient|patientin|diagnose|befund|krankheit|medikament|versichertennummer|krankenkasse|iban|bic|passwort|kennwort|geburtsdatum|sozialversicherung|gehalt|personalakte|vertraulich)\b/i;
+
+const PROVIDERS = {
+  omni:   { name:'OmniRoute', base: () => store.get('baseUrl',''), key: () => store.get('apiKey',''), headerTimeout: 5000 },
+  gemini: { name:'Gemini', base: () => 'https://generativelanguage.googleapis.com/v1beta/openai', key: () => store.get('geminiKey',''), headerTimeout: 30000 },
+  groq:   { name:'Groq', base: () => 'https://api.groq.com/openai/v1', key: () => store.get('groqKey',''), headerTimeout: 30000 }
+};
+const GEMINI = ['gemini-4-argon','gemini-3.1-pro-preview','gemini-3.8-flash','gemini-3-flash-preview','gemini-3.1-flash-lite'];
+const CHAINS = {
+  'free': [['omni','free'], ...GEMINI.map(m=>['gemini',m]), ['groq','openai/gpt-oss-120b'], ['groq','openai/gpt-oss-20b'], ['groq','qwen/qwen3.8-27b']],
+  'free-code': [['omni','free-code'], ...GEMINI.map(m=>['gemini',m]), ['groq','openai/gpt-oss-120b'], ['groq','openai/gpt-oss-20b']]
+};
 
 const $ = id => document.getElementById(id);
 const store = {
@@ -95,13 +113,15 @@ const store = {
   set(k, v){ try{ localStorage.setItem('omc_'+k, JSON.stringify(v)); }catch(e){} }
 };
 
+const BAD_CHARS = [0x200B,0x200C,0x200D,0x2060,0xFEFF,0xA0,0x22,0x27,0x201C,0x201D,0x201E,0x2018,0x2019,0x201A,0xAB,0xBB].map(c => String.fromCharCode(c));
+function cleanKey(k){ return [...(k||'')].filter(c => !BAD_CHARS.includes(c) && !/\s/.test(c)).join(''); }
+const validKey = k => /^[\x21-\x7E]+$/.test(k) && !k.includes('*');
+
 let history = store.get('history', []);
 let busy = false;
 $('model').value = store.get('model', 'free');
-const DEFAULT_BASE = (location.protocol==='file:'||location.hostname==='localhost') ? 'http://localhost:20128/v1' : '';
-if(!store.get('baseUrl','')) store.set('baseUrl', DEFAULT_BASE);
-$('baseUrl').value = store.get('baseUrl', DEFAULT_BASE);
-$('apiKey').value = store.get('apiKey', '');
+for(const f of ['geminiKey','groqKey','apiKey','baseUrl']) $(f).value = store.get(f, '');
+if(!store.get('baseUrl','') && (location.protocol==='file:'||location.hostname==='localhost')) $('baseUrl').value = 'http://localhost:20128/v1';
 
 function esc(s){ return s.replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
 function fmt(s){
@@ -112,11 +132,13 @@ function fmt(s){
   }).join('');
 }
 
+function configured(){ return !!(store.get('geminiKey','') || store.get('groqKey','') || (store.get('baseUrl','') && store.get('apiKey',''))); }
+
 function render(){
   const log = $('log'); log.innerHTML = '';
   if(!history.length){
     log.innerHTML = `<div class="empty"><h2 style="margin:0">Was steht an?</h2>
-      <p>Läuft über deine Gratis-Kette in OmniRoute (Gemini → Groq → DuckDuckGo). Euer Claude-Kontingent wird hier nicht verbraucht.</p>
+      <p>Läuft gratis über Gemini und Groq, wenn dein PC an ist zuerst über OmniRoute. Euer Claude-Kontingent wird hier nicht verbraucht.</p>
       <p>Braucht eine Aufgabe Claude, erscheint ein Hinweis mit Übergabe-Button.</p>
       <p style="font-size:13px">Keine Patienten-, Kunden- oder internen Firmendaten eingeben – die gehören direkt zu Claude.</p></div>`;
     return;
@@ -125,7 +147,7 @@ function render(){
     if(m.role === 'user'){
       const d = document.createElement('div'); d.className = 'msg user'; d.innerHTML = fmt(m.content); log.appendChild(d);
     } else if(m.role === 'assistant'){
-      let text = m.content || '';
+      const text = m.content || '';
       const match = text.match(/^\s*\[\[CLAUDE\]\]\s*(.*)/);
       if(match){
         const reason = match[1].split('\n')[0];
@@ -160,41 +182,76 @@ function sensitiveWarning(text, onContinue){
   $('log').appendChild(b); $('log').parentElement.scrollTop = 1e9;
 }
 
+// Abkühlzeiten: ausgelastete oder kaputte Modelle werden eine Weile übersprungen
+function coolKey(p, m){ return p + '|' + m; }
+function isCooling(p, m){ const c = store.get('cool', {}); return (c[coolKey(p,m)]||0) > Date.now() || (c[coolKey(p,'*')]||0) > Date.now(); }
+function cool(p, m, ms){ const c = store.get('cool', {}); c[coolKey(p,m)] = Date.now() + ms; store.set('cool', c); }
+
+async function tryTarget(prov, model, messages, msg){
+  const P = PROVIDERS[prov]; const base = (P.base()||'').replace(/\/$/,''); const key = P.key();
+  if(!base || !key) return {skip:true};
+  if(isCooling(prov, model)) return {skip:true};
+  const ctrl = new AbortController(); const timer = setTimeout(() => ctrl.abort(), P.headerTimeout);
+  let r;
+  try{
+    r = await fetch(base + '/chat/completions', {
+      method:'POST', signal: ctrl.signal,
+      headers:{'Content-Type':'application/json','Authorization':'Bearer '+key},
+      body: JSON.stringify({model, messages, stream:true})
+    });
+  }catch(e){
+    clearTimeout(timer);
+    cool(prov, prov==='omni' ? '*' : model, prov==='omni' ? 120000 : 60000);
+    return {error: P.name + ' nicht erreichbar'};
+  }
+  clearTimeout(timer);
+  if(!r.ok){
+    const t = (await r.text().catch(()=>'')).slice(0,200);
+    if(r.status === 429) cool(prov, model, 10*60000);
+    else if(r.status === 404) cool(prov, model, 24*3600000);
+    else if(r.status === 401 || r.status === 403) cool(prov, '*', 5*60000);
+    else cool(prov, model, 120000);
+    return {error: P.name + ' ' + model + ': ' + r.status + (t ? ' ' + t : '')};
+  }
+  msg.model = P.name + ' · ' + model;
+  const reader = r.body.getReader(); const dec = new TextDecoder(); let buf = '';
+  while(true){
+    const {done, value} = await reader.read(); if(done) break;
+    buf += dec.decode(value, {stream:true});
+    const lines = buf.split('\n'); buf = lines.pop();
+    for(const line of lines){
+      if(!line.startsWith('data:')) continue;
+      const data = line.slice(5).trim(); if(!data || data === '[DONE]') continue;
+      try{
+        const j = JSON.parse(data);
+        if(prov === 'omni' && j.model) msg.model = 'OmniRoute · ' + j.model;
+        const delta = j.choices?.[0]?.delta?.content ?? j.choices?.[0]?.message?.content ?? '';
+        if(delta){ msg.content += delta; render(); }
+      }catch(e){}
+    }
+  }
+  if(!msg.content){ cool(prov, model, 120000); return {error: P.name + ' ' + model + ': leere Antwort'}; }
+  return {ok:true};
+}
+
 async function send(text, opts = {}){
   if(busy) return;
-  const key = store.get('apiKey','');
-  if(!key || !store.get('baseUrl','') || /[^\x21-\x7E]/.test(key)){ $('settings').showModal(); return; }
+  if(!configured()){ $('settings').showModal(); return; }
   if(!opts.retry) history.push({role:'user', content:text});
   const msg = {role:'assistant', content:'', model:''}; history.push(msg);
-  render(); busy = true; $('status').textContent = 'antwortet …'; $('send').disabled = true;
-  const system = opts.force ? 'Du bist ein Alltags-Assistent. Antworte auf Deutsch, klar und knapp. Löse die Aufgabe direkt, so gut du kannst.' : SYSTEM;
-  const messages = [{role:'system', content:system}, ...history.filter(m => (m.role==='user'||m.role==='assistant') && m !== msg && !(m.content||'').startsWith('[[CLAUDE]]')).map(m => ({role:m.role, content:m.content}))];
-  try{
-    const r = await fetch(store.get('baseUrl','http://localhost:20128/v1').replace(/\/$/,'') + '/chat/completions', {
-      method:'POST', headers:{'Content-Type':'application/json','Authorization':'Bearer '+key},
-      body: JSON.stringify({model:$('model').value, messages, stream:true})
-    });
-    if(!r.ok){ const t = await r.text(); throw new Error(r.status+': '+t.slice(0,300)); }
-    const reader = r.body.getReader(); const dec = new TextDecoder(); let buf = '';
-    while(true){
-      const {done, value} = await reader.read(); if(done) break;
-      buf += dec.decode(value, {stream:true});
-      const lines = buf.split('\n'); buf = lines.pop();
-      for(const line of lines){
-        if(!line.startsWith('data:')) continue;
-        const data = line.slice(5).trim(); if(!data || data === '[DONE]') continue;
-        try{
-          const j = JSON.parse(data);
-          if(j.model) msg.model = j.model;
-          const delta = j.choices?.[0]?.delta?.content ?? j.choices?.[0]?.message?.content ?? '';
-          if(delta){ msg.content += delta; render(); }
-        }catch(e){}
-      }
-    }
-    if(!msg.content) msg.content = '(leere Antwort)';
-  }catch(e){
+  render(); busy = true; $('send').disabled = true;
+  const messages = [{role:'system', content: opts.force ? SYSTEM_FORCE : SYSTEM}, ...history.filter(m => (m.role==='user'||m.role==='assistant') && m !== msg && !(m.content||'').startsWith('[[CLAUDE]]')).map(m => ({role:m.role, content:m.content}))];
+  const errors = []; let done = false;
+  for(const [prov, model] of CHAINS[$('model').value]){
+    $('status').textContent = PROVIDERS[prov].name + ' …';
+    msg.content = ''; msg.model = '';
+    const res = await tryTarget(prov, model, messages, msg);
+    if(res.ok){ done = true; break; }
+    if(res.error) errors.push(res.error);
+  }
+  if(!done){
     history.pop();
-    history.push({role:'error', content: e.message.includes('Failed to fetch') ? 'OmniRoute ist nicht erreichbar. Läuft es unter '+store.get('baseUrl','')+'?' : e.message});
+    history.push({role:'error', content: 'Kein Anbieter hat geantwortet. ' + (errors.length ? errors.slice(-3).join(' · ') : 'Bitte Keys unter ⚙ prüfen.')});
   }
   busy = false; $('status').textContent = 'bereit'; $('send').disabled = false;
   save(); render();
@@ -210,7 +267,7 @@ function transcript(){
     .map(m => (m.role==='user' ? 'Ich: ' : 'Assistent: ') + (m.content||'').replace(/^\s*\[\[CLAUDE\]\][^\n]*\n?/,'')).join('\n\n');
 }
 function openClaude(text){
-  let prompt = text.length > 6000 ? text.slice(-6000) : text;
+  const prompt = text.length > 6000 ? text.slice(-6000) : text;
   try{ navigator.clipboard.writeText(text); }catch(e){}
   window.open('https://claude.ai/new?q=' + encodeURIComponent(prompt), '_blank');
 }
@@ -230,18 +287,23 @@ $('clear').onclick = () => { history = []; save(); render(); };
 $('toClaude').onclick = handToClaude;
 $('settingsBtn').onclick = () => $('settings').showModal();
 $('cancelSettings').onclick = () => $('settings').close();
-function cleanKey(k){ return (k||'').replace(/[\s\u200B-\u200D\u2060\uFEFF\u00A0"'\u201C\u201D\u201E\u2018\u2019\u201A\u00AB\u00BB]/g,''); }
 $('saveSettings').onclick = () => {
-  const k = cleanKey($('apiKey').value); const u = $('baseUrl').value.trim();
   const err = $('settingsErr');
-  if(/[^\x21-\x7E]/.test(k)){ err.textContent = 'Der Schlüssel enthält ungültige Zeichen (z. B. „…“ oder Umlaute). Bitte den echten Schlüssel aus OmniRoute einfügen, er beginnt mit sk- und besteht nur aus Buchstaben und Zahlen.'; return; }
-  if(k.includes('*')){ err.textContent = 'Das ist der gekürzte Schlüssel mit Sternchen. Bitte in OmniRoute einen neuen Schlüssel anlegen und den vollständigen Wert einfügen.'; return; }
-  if(!/^https?:\/\//.test(u)){ err.textContent = 'Die Adresse muss mit https:// oder http:// beginnen.'; return; }
-  err.textContent = ''; $('apiKey').value = k;
-  store.set('apiKey', k); store.set('baseUrl', u); $('settings').close();
+  const keys = { geminiKey: cleanKey($('geminiKey').value), groqKey: cleanKey($('groqKey').value), apiKey: cleanKey($('apiKey').value) };
+  const names = { geminiKey:'Gemini', groqKey:'Groq', apiKey:'OmniRoute' };
+  for(const [f, k] of Object.entries(keys)){
+    if(k && !validKey(k)){ err.textContent = 'Der ' + names[f] + '-Key enthält ungültige Zeichen oder ist die gekürzte Version mit Sternchen. Bitte den vollständigen Key einfügen.'; return; }
+  }
+  const u = $('baseUrl').value.trim();
+  if(u && !/^https?:\/\//.test(u)){ err.textContent = 'Die OmniRoute-Adresse muss mit https:// oder http:// beginnen.'; return; }
+  if(!keys.geminiKey && !keys.groqKey && !(u && keys.apiKey)){ err.textContent = 'Bitte mindestens einen Gemini- oder Groq-Key eintragen.'; return; }
+  err.textContent = '';
+  for(const [f, k] of Object.entries(keys)){ store.set(f, k); $(f).value = k; }
+  store.set('baseUrl', u); store.set('cool', {});
+  $('settings').close();
 };
 render();
-if(!store.get('apiKey','') || !store.get('baseUrl','')) setTimeout(() => $('settings').showModal(), 300);
+if(!configured()) setTimeout(() => $('settings').showModal(), 300);
 </script>
 </body>
 </html>
