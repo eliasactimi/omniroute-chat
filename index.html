@@ -65,6 +65,7 @@ dialog label{font-size:13px;color:var(--muted)}
   <label>OmniRoute-API-Schlüssel (Endpoint → Registrierte Schlüssel)</label>
   <input id="apiKey" type="password" placeholder="sk-…" autocomplete="off">
   <div style="font-size:12px;color:var(--muted);margin-bottom:12px">Der Schlüssel bleibt nur in diesem Browser gespeichert.</div>
+  <div id="settingsErr" style="font-size:13px;color:var(--claude);margin-bottom:12px"></div>
   <div style="display:flex;gap:8px;justify-content:flex-end">
     <button class="btn" id="cancelSettings">Abbrechen</button>
     <button class="btn primary" id="saveSettings">Speichern</button>
@@ -162,7 +163,7 @@ function sensitiveWarning(text, onContinue){
 async function send(text, opts = {}){
   if(busy) return;
   const key = store.get('apiKey','');
-  if(!key || !store.get('baseUrl','')){ $('settings').showModal(); return; }
+  if(!key || !store.get('baseUrl','') || /[^\x21-\x7E]/.test(key)){ $('settings').showModal(); return; }
   if(!opts.retry) history.push({role:'user', content:text});
   const msg = {role:'assistant', content:'', model:''}; history.push(msg);
   render(); busy = true; $('status').textContent = 'antwortet …'; $('send').disabled = true;
@@ -229,7 +230,16 @@ $('clear').onclick = () => { history = []; save(); render(); };
 $('toClaude').onclick = handToClaude;
 $('settingsBtn').onclick = () => $('settings').showModal();
 $('cancelSettings').onclick = () => $('settings').close();
-$('saveSettings').onclick = () => { store.set('apiKey', $('apiKey').value.trim()); store.set('baseUrl', $('baseUrl').value.trim()); $('settings').close(); };
+function cleanKey(k){ return (k||'').replace(/[\s\u200B-\u200D\u2060\uFEFF\u00A0"'\u201C\u201D\u201E\u2018\u2019\u201A\u00AB\u00BB]/g,''); }
+$('saveSettings').onclick = () => {
+  const k = cleanKey($('apiKey').value); const u = $('baseUrl').value.trim();
+  const err = $('settingsErr');
+  if(/[^\x21-\x7E]/.test(k)){ err.textContent = 'Der Schlüssel enthält ungültige Zeichen (z. B. „…“ oder Umlaute). Bitte den echten Schlüssel aus OmniRoute einfügen, er beginnt mit sk- und besteht nur aus Buchstaben und Zahlen.'; return; }
+  if(k.includes('*')){ err.textContent = 'Das ist der gekürzte Schlüssel mit Sternchen. Bitte in OmniRoute einen neuen Schlüssel anlegen und den vollständigen Wert einfügen.'; return; }
+  if(!/^https?:\/\//.test(u)){ err.textContent = 'Die Adresse muss mit https:// oder http:// beginnen.'; return; }
+  err.textContent = ''; $('apiKey').value = k;
+  store.set('apiKey', k); store.set('baseUrl', u); $('settings').close();
+};
 render();
 if(!store.get('apiKey','') || !store.get('baseUrl','')) setTimeout(() => $('settings').showModal(), 300);
 </script>
