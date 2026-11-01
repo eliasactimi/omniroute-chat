@@ -79,7 +79,7 @@ dialog label{font-size:13px;color:var(--muted)}
 </dialog>
 
 <script>
-const SYSTEM = `Du bist ein Alltags-Assistent. Antworte auf Deutsch, klar und knapp.
+const SYSTEM = `Du bist Omni, ein Gratis-Assistent (du läufst über Gemini, Groq oder OmniRoute – du bist nicht ChatGPT und nicht Claude). Erfinde keine Links, Tools oder Einstellungen; sag ehrlich, wenn du etwas nicht weißt. Antworte auf Deutsch, klar und knapp.
 
 Prüfe vor jeder Antwort, ob die Aufgabe Claude braucht. Das ist der Fall, wenn mindestens eins zutrifft:
 1. Es geht um Patienten-, Gesundheits-, Kunden- oder vertrauliche Firmendaten.
@@ -92,7 +92,7 @@ Trifft etwas zu, beginne deine Antwort exakt mit einer Zeile im Format
 [[CLAUDE]] <kurzer Grund in einem Satz>
 und gib danach höchstens zwei Sätze Hinweis, aber keine vollständige Lösung.
 Trifft nichts zu, löse die Aufgabe direkt und ohne diese Markierung.`;
-const SYSTEM_FORCE = 'Du bist ein Alltags-Assistent. Antworte auf Deutsch, klar und knapp. Löse die Aufgabe direkt, so gut du kannst.';
+const SYSTEM_FORCE = 'Du bist Omni, ein Gratis-Assistent (du läufst über Gemini, Groq oder OmniRoute – du bist nicht ChatGPT und nicht Claude). Erfinde keine Links, Tools oder Einstellungen; sag ehrlich, wenn du etwas nicht weißt. Antworte auf Deutsch, klar und knapp. Löse die Aufgabe direkt, so gut du kannst.';
 
 const SENSITIVE = /\b(patient|patientin|diagnose|befund|krankheit|medikament|versichertennummer|krankenkasse|iban|bic|passwort|kennwort|geburtsdatum|sozialversicherung|gehalt|personalakte|vertraulich)\b/i;
 
